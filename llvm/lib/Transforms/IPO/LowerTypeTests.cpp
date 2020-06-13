@@ -779,6 +779,11 @@ Value *LowerTypeTestsModule::lowerTypeTestCall(Metadata *TypeId, CallInst *CI,
 
   Value *PtrAsInt = B.CreatePtrToInt(Ptr, IntPtrTy);
 
+  FunctionCallee TraceCall= M.getOrInsertFunction("__trace", 
+    Type::getVoidTy(M.getContext()), IntPtrTy);
+  
+  B.CreateCall(TraceCall, B.CreatePointerCast(PtrAsInt, IntPtrTy));
+
   Constant *OffsetedGlobalAsInt =
       ConstantExpr::getPtrToInt(TIL.OffsetedGlobal, IntPtrTy);
   if (TIL.TheKind == TypeTestResolution::Single)
@@ -2161,6 +2166,9 @@ bool LowerTypeTestsModule::lower() {
              });
 
   // For each disjoint set we found...
+
+  printCallsites(TypeTestFunc);
+
   for (const auto &S : Sets) {
     // Build the list of type identifiers in this disjoint set.
     std::vector<Metadata *> TypeIds;
