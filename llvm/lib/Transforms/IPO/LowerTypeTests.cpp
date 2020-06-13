@@ -766,15 +766,8 @@ static bool isKnownTypeIdMember(Metadata *TypeId, const DataLayout &DL,
 /// replace the call with.
 Value *LowerTypeTestsModule::lowerTypeTestCall(Metadata *TypeId, CallInst *CI,
                                                const TypeIdLowering &TIL) {
-  if (TIL.TheKind == TypeTestResolution::Unsat)
-    return ConstantInt::getFalse(M.getContext());
 
   Value *Ptr = CI->getArgOperand(0);
-  const DataLayout &DL = M.getDataLayout();
-  if (isKnownTypeIdMember(TypeId, DL, Ptr, 0))
-    return ConstantInt::getTrue(M.getContext());
-
-  BasicBlock *InitialBB = CI->getParent();
 
   IRBuilder<> B(CI);
 
@@ -784,6 +777,16 @@ Value *LowerTypeTestsModule::lowerTypeTestCall(Metadata *TypeId, CallInst *CI,
     Type::getVoidTy(M.getContext()), IntPtrTy);
   
   B.CreateCall(TraceCall, B.CreatePointerCast(PtrAsInt, IntPtrTy));
+
+  /* incorrect, only for testing purposes */
+  if (TIL.TheKind == TypeTestResolution::Unsat)
+    return ConstantInt::getTrue(M.getContext());
+
+  const DataLayout &DL = M.getDataLayout();
+  if (isKnownTypeIdMember(TypeId, DL, Ptr, 0))
+    return ConstantInt::getTrue(M.getContext());
+
+  BasicBlock *InitialBB = CI->getParent();
 
   Constant *OffsetedGlobalAsInt =
       ConstantExpr::getPtrToInt(TIL.OffsetedGlobal, IntPtrTy);
