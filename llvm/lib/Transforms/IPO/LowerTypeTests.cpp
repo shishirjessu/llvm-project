@@ -2268,6 +2268,17 @@ bool LowerTypeTestsModule::lower() {
     }
   }
 
+  for(Function &func: M.functions()) {
+    if (!func.isIntrinsic()) {
+      GlobalValue* UsedArr = {&func};
+      appendToUsed(M, UsedArr);
+    }
+
+    func.addFnAttr(Attribute::OptimizeNone);
+    func.addFnAttr(Attribute::NoInline);
+  }
+
+
   std::error_code EC;
   llvm::raw_fd_ostream OS("lower_result.bc", EC, llvm::sys::fs::F_None);
   WriteBitcodeToFile(M, OS);
