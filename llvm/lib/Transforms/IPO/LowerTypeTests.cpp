@@ -503,6 +503,9 @@ class LowerTypeTestsModule {
   /// replace each use, which is a direct function call.
   void replaceDirectCalls(Value *Old, Value *New);
 
+  void printCallsites(Function* TypeTestFunc);
+  typedef std::map<std::string, std::vector<std::pair<int, CallInst*>>> callsiteMap;
+
 public:
   LowerTypeTestsModule(Module &M, ModuleSummaryIndex *ExportSummary,
                        const ModuleSummaryIndex *ImportSummary,
@@ -594,6 +597,31 @@ static Value *createMaskedBitTest(IRBuilder<> &B, Value *Bits,
   Value *BitMask = B.CreateShl(ConstantInt::get(BitsType, 1), BitIndex);
   Value *MaskedBits = B.CreateAnd(Bits, BitMask);
   return B.CreateICmpNE(MaskedBits, ConstantInt::get(BitsType, 0));
+}
+
+void LowerTypeTestsModule::printCallsites(Function* TypeTestFunc) {
+  /* for each function with callsites, get callsites*/
+  int total = 0;
+  callsiteMap callsites;
+
+  for (const Use &U : TypeTestFunc->uses()) {
+    auto CI = cast<CallInst>(U.getUser());
+
+    int lineNumber = CI -> getDebugLoc() -> getLine();
+    std::string functionName (CI -> getCaller() -> getName());
+
+    callsites[functionName].push_back(std::make_pair(lineNumber, CI));
+  }
+
+  for (auto kv: callsites) {
+    const std::string functionName(kv.first);
+    bool plural = callsites[functionName].size() > 1;
+    std::cout << functionName << ": " << callsites[functionName].size() 
+              << " callsite" << (plural ? "s" : "") << std::endl;
+    total += callsites[functionName].size();
+  }
+
+  std::cout << "total: " << total << std::endl;
 }
 
 ByteArrayInfo *LowerTypeTestsModule::createByteArray(BitSetInfo &BSI) {
