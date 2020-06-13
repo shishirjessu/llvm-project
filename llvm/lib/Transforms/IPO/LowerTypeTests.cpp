@@ -27,6 +27,7 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/TypeMetadataUtils.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constant.h"
@@ -2263,6 +2264,11 @@ bool LowerTypeTestsModule::lower() {
       }
     }
   }
+
+  std::error_code EC;
+  llvm::raw_fd_ostream OS("lower_result.bc", EC, llvm::sys::fs::F_None);
+  WriteBitcodeToFile(M, OS);
+  OS.flush();
 
   return true;
 }
