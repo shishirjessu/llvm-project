@@ -504,6 +504,8 @@ class LowerTypeTestsModule {
   /// replace each use, which is a direct function call.
   void replaceDirectCalls(Value *Old, Value *New);
 
+  /* my contributions. To do: put them in the right place */
+
   void printCallsites(Function* TypeTestFunc);
 
   struct JumpTableInfo {
@@ -513,6 +515,12 @@ class LowerTypeTestsModule {
   };
 
   typedef std::vector<std::pair<int, CallInst*>> CallsiteList;
+
+  std::map<Metadata*, std::set<int>> AllowedIndices;
+
+  bool UseFuzzingCFI = true;
+
+
 
 public:
   LowerTypeTestsModule(Module &M, ModuleSummaryIndex *ExportSummary,
@@ -585,7 +593,17 @@ BitSetInfo LowerTypeTestsModule::buildBitSet(
           cast<ConstantInt>(
               cast<ConstantAsMetadata>(Type->getOperand(0))->getValue())
               ->getZExtValue();
-      BSB.addOffset(GlobalAndOffset.second + Offset);
+
+      uint64_t offsetToAdd = GlobalAndOffset.second + Offset;
+
+      if (UseFuzzingCFI) {
+        std::set<int> allowed = AllowedIndices[TypeId];
+        if (allowed.find(offsetToAdd / 8) != allowed.end()) 
+          BSB.addOffset(offsetToAdd);
+      } 
+      else {
+        BSB.addOffset(offsetToAdd);
+      }   
     }
   }
 
