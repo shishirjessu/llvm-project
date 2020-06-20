@@ -520,6 +520,10 @@ class LowerTypeTestsModule {
 
   bool UseFuzzingCFI = true;
 
+  std::map<std::string, JumpTableInfo> ExistingJumpTables;
+
+  std::string getMDString(Metadata* md);
+
 
 
 public:
@@ -1469,6 +1473,16 @@ void LowerTypeTestsModule::createJumpTable(
   IRB.CreateUnreachable();
 }
 
+std::string LowerTypeTestsModule::getMDString(Metadata* md) {
+  std::string TypeIdStr = ((MDString*) md)->getString().str();
+
+  uint64_t SeparatorIndex = TypeIdStr.find("//");
+  if (SeparatorIndex == std::string::npos) 
+    return TypeIdStr; 
+
+  return TypeIdStr.substr(0, SeparatorIndex);
+}
+
 /// Given a disjoint set of type identifiers and functions, build a jump table
 /// for the functions, build the bit sets and lower the llvm.type.test calls.
 void LowerTypeTestsModule::buildBitSetsFromFunctionsNative(
@@ -1557,16 +1571,33 @@ void LowerTypeTestsModule::buildBitSetsFromFunctionsNative(
   for (unsigned I = 0; I != Functions.size(); ++I)
     GlobalLayout[Functions[I]] = I * EntrySize;
 
-  Function *JumpTableFn =
-      Function::Create(FunctionType::get(Type::getVoidTy(M.getContext()),
-                                         /* IsVarArg */ false),
-                       GlobalValue::PrivateLinkage,
-                       M.getDataLayout().getProgramAddressSpace(),
-                       ".cfi.jumptable", &M);
-  ArrayType *JumpTableType =
-      ArrayType::get(getJumpTableEntryType(), Functions.size());
-  auto JumpTable =
-      ConstantExpr::getPointerCast(JumpTableFn, JumpTableType->getPointerTo(0));
+  Function *JumpTableFn; 
+  ArrayType *JumpTableType;
+  Constant* JumpTable;
+
+  std::string CurrentMetadata = getMDString(TypeIds[0]);
+
+  if (ExistingJumpTables.find(CurrentMetadata) != ExistingJumpTables.end()) {
+    JumpTableInfo& ExistingJumpTable = ExistingJumpTables[CurrentMetadata];
+
+    JumpTableFn = ExistingJumpTable.JumpTableFn;
+    JumpTableType = ExistingJumpTable.JumpTableType;
+    JumpTable = ExistingJumpTable.JumpTable;
+  } 
+
+  else {
+
+    JumpTableFn =
+    Function::Create(FunctionType::get(Type::getVoidTy(M.getContext()),
+                                       /* IsVarArg */ false),
+                     GlobalValue::PrivateLinkage,
+                     M.getDataLayout().getProgramAddressSpace(),
+                     ".cfi.jumptable", &M);
+    JumpTableType =
+        ArrayType::get(getJumpTableEntryType(), Functions.size());
+    JumpTable =
+        ConstantExpr::getPointerCast(JumpTableFn, JumpTableType->getPointerTo(0));
+  }
 
   lowerTypeTestCalls(TypeIds, JumpTable, GlobalLayout);
 
