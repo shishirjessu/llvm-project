@@ -505,7 +505,14 @@ class LowerTypeTestsModule {
   void replaceDirectCalls(Value *Old, Value *New);
 
   void printCallsites(Function* TypeTestFunc);
-  typedef std::map<std::string, std::vector<std::pair<int, CallInst*>>> callsiteMap;
+
+  struct JumpTableInfo {
+    Function* JumpTableFn;
+    ArrayType *JumpTableType;
+    Constant *JumpTable;
+  };
+
+  typedef std::vector<std::pair<int, CallInst*>> CallsiteList;
 
 public:
   LowerTypeTestsModule(Module &M, ModuleSummaryIndex *ExportSummary,
@@ -603,7 +610,7 @@ static Value *createMaskedBitTest(IRBuilder<> &B, Value *Bits,
 void LowerTypeTestsModule::printCallsites(Function* TypeTestFunc) {
   /* for each function with callsites, get callsites*/
   int total = 0;
-  callsiteMap callsites;
+  std::map<std::string, CallsiteList> CallsiteMap;
 
   for (const Use &U : TypeTestFunc->uses()) {
     auto CI = cast<CallInst>(U.getUser());
@@ -611,15 +618,15 @@ void LowerTypeTestsModule::printCallsites(Function* TypeTestFunc) {
     int lineNumber = CI -> getDebugLoc() -> getLine();
     std::string functionName (CI -> getCaller() -> getName());
 
-    callsites[functionName].push_back(std::make_pair(lineNumber, CI));
+    CallsiteMap[functionName].push_back(std::make_pair(lineNumber, CI));
   }
 
-  for (auto kv: callsites) {
+  for (auto kv: CallsiteMap) {
     const std::string functionName(kv.first);
-    bool plural = callsites[functionName].size() > 1;
-    std::cout << functionName << ": " << callsites[functionName].size() 
+    bool plural = CallsiteMap[functionName].size() > 1;
+    std::cout << functionName << ": " << CallsiteMap[functionName].size() 
               << " callsite" << (plural ? "s" : "") << std::endl;
-    total += callsites[functionName].size();
+    total += CallsiteMap[functionName].size();
   }
 
   std::cout << "total: " << total << std::endl;
