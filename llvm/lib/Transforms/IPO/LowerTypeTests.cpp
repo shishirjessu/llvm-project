@@ -510,7 +510,7 @@ class LowerTypeTestsModule {
 
   struct JumpTableInfo {
     Function* JumpTableFn;
-    ArrayType *JumpTableType;
+    ArrayType *JumpTableType; 
     Constant *JumpTable;
   };
 
@@ -1597,6 +1597,13 @@ void LowerTypeTestsModule::buildBitSetsFromFunctionsNative(
         ArrayType::get(getJumpTableEntryType(), Functions.size());
     JumpTable =
         ConstantExpr::getPointerCast(JumpTableFn, JumpTableType->getPointerTo(0));
+
+    JumpTableInfo JTI;
+    JTI.JumpTableFn = JumpTableFn;
+    JTI.JumpTableType = JumpTableType;
+    JTI.JumpTable = JumpTable; 
+
+    ExistingJumpTables[CurrentMetadata] = JTI;    
   }
 
   lowerTypeTestCalls(TypeIds, JumpTable, GlobalLayout);
@@ -2258,7 +2265,8 @@ bool LowerTypeTestsModule::lower() {
                });
 
     // Build bitsets for this disjoint set.
-    buildBitSetsFromDisjointSet(TypeIds, Globals, ICallBranchFunnels);
+    if (!UseFuzzingCFI)
+      buildBitSetsFromDisjointSet(TypeIds, Globals, ICallBranchFunnels);
   }
 
   allocateByteArrays();
