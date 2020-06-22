@@ -525,6 +525,7 @@ class LowerTypeTestsModule {
   std::map<Metadata*, std::set<int>> AllowedIndices;
 
   bool UseFuzzingCFI = true;
+  bool traceMode = true;
 
   std::map<std::string, JumpTableInfo> ExistingJumpTables;
 
@@ -810,14 +811,21 @@ Value *LowerTypeTestsModule::lowerTypeTestCall(Metadata *TypeId, CallInst *CI,
 
   Value *PtrAsInt = B.CreatePtrToInt(Ptr, IntPtrTy);
 
-  FunctionCallee TraceCall= M.getOrInsertFunction("__trace", 
-    Type::getVoidTy(M.getContext()), IntPtrTy);
+  if (traceMode) {
+    FunctionCallee TraceCall= M.getOrInsertFunction("__trace", 
+      Type::getVoidTy(M.getContext()), IntPtrTy);
   
-  B.CreateCall(TraceCall, B.CreatePointerCast(PtrAsInt, IntPtrTy));
+    B.CreateCall(TraceCall, B.CreatePointerCast(PtrAsInt, IntPtrTy));
+  }
 
-  /* incorrect, only for testing purposes */
-  if (TIL.TheKind == TypeTestResolution::Unsat)
-    return ConstantInt::getTrue(M.getContext());
+  /* In trace mode, mark unsatisfiable call-sites as 
+     always satisfiable, to ensure the trace calls are not 
+     optimized out */
+  if (TIL.TheKind == TypeTestResolution::Unsat) {
+    return traceMode ? 
+        ConstantInt::getTrue(M.getContext()) :
+        ConstantInt::getFalse(M.getContext());
+  }
 
   const DataLayout &DL = M.getDataLayout();
   if (isKnownTypeIdMember(TypeId, DL, Ptr, 0))
