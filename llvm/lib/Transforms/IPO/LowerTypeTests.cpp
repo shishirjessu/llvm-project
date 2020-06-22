@@ -56,6 +56,7 @@
 #include "llvm/IR/Use.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Allocator.h"
@@ -523,6 +524,7 @@ class LowerTypeTestsModule {
   std::map<std::string, JumpTableInfo> ExistingJumpTables;
 
   std::string getMDString(Metadata* md);
+  void buildBitSetsForCallsites();
 
 
 
@@ -1761,6 +1763,25 @@ void LowerTypeTestsModule::buildBitSetsFromDisjointSet(
     buildBitSetsFromFunctions(TypeIds, OrderedGTMs);
 }
 
+void LowerTypeTestsModule::buildBitSetsForCallsites() {
+  /* Parse the input file to obtain the CFG as a std::map */
+  ExitOnError ExitOnErr("-lowertypetests-cfg-summary: cfg.txt:");
+
+  auto CfgSummaryFile =
+      ExitOnErr(errorOrToExpected(MemoryBuffer::getFile("cfg.txt")));
+
+  Expected<json::Value> E = json::parse(CfgSummaryFile->getBuffer());
+  assert(E && E->kind() == json::Value::Object); 
+
+  json::Value CFGData = E.get();
+
+  std::map<std::string, std::vector<std::string>> CFG;
+  json::fromJSON(CFGData, CFG);
+
+
+
+}
+
 /// Lower all type tests in this module.
 LowerTypeTestsModule::LowerTypeTestsModule(
     Module &M, ModuleSummaryIndex *ExportSummary,
@@ -2267,6 +2288,10 @@ bool LowerTypeTestsModule::lower() {
     // Build bitsets for this disjoint set.
     if (!UseFuzzingCFI)
       buildBitSetsFromDisjointSet(TypeIds, Globals, ICallBranchFunnels);
+  }
+
+  if (UseFuzzingCFI) { 
+    buildBitSetsForCallsites();
   }
 
   allocateByteArrays();
