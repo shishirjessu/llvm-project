@@ -525,7 +525,7 @@ class LowerTypeTestsModule {
   std::map<Metadata*, std::set<int>> AllowedIndices;
 
   bool UseFuzzingCFI = true;
-  bool traceMode = true;
+  bool traceMode = false;
 
   std::map<std::string, JumpTableInfo> ExistingJumpTables;
 
@@ -1659,16 +1659,20 @@ void LowerTypeTestsModule::buildBitSetsFromFunctionsNative(
       } else {
         assert(F->getType()->getAddressSpace() == 0);
 
-        GlobalAlias *FAlias =
+        llvm::StringRef suffix ("cfi");
+
+        if (!F->getName().endswith(suffix)) {
+          GlobalAlias *FAlias =
             GlobalAlias::create(F->getValueType(), 0, F->getLinkage(), "",
                                 CombinedGlobalElemPtr, &M);
-        FAlias->setVisibility(F->getVisibility());
-        FAlias->takeName(F);
-        if (FAlias->hasName())
-          F->setName(FAlias->getName() + ".cfi");
-        replaceCfiUses(F, FAlias, IsJumpTableCanonical);
-        if (!F->hasLocalLinkage())
-          F->setVisibility(GlobalVariable::HiddenVisibility);
+          FAlias->setVisibility(F->getVisibility());
+          FAlias->takeName(F);
+          if (FAlias->hasName())
+            F->setName(FAlias->getName() + ".cfi");
+          replaceCfiUses(F, FAlias, IsJumpTableCanonical);
+          if (!F->hasLocalLinkage())
+            F->setVisibility(GlobalVariable::HiddenVisibility);
+        }
       }
     }
   }
@@ -1784,7 +1788,7 @@ void LowerTypeTestsModule::buildBitSetsPerCallsite(Function* TypeTestFunc,
   ExitOnError ExitOnErr("-lowertypetests-cfg-summary: cfg.txt:");
 
   auto CfgSummaryFile =
-      ExitOnErr(errorOrToExpected(MemoryBuffer::getFile("cfg.txt")));
+      ExitOnErr(errorOrToExpected(MemoryBuffer::getFile("/home/sjessu/cfg.txt")));
 
   Expected<json::Value> E = json::parse(CfgSummaryFile->getBuffer());
   assert(E && E->kind() == json::Value::Object); 
@@ -1848,7 +1852,7 @@ void LowerTypeTestsModule::buildBitSetsPerCallsite(Function* TypeTestFunc,
         std::vector<Metadata*> oldMDVector {newMD};
         oldGTMs.clear();
         buildBitSetsFromGlobalVariables(oldMDVector, oldGTMs);
-        return;
+        continue;
       }
 
       /* must create new Global Type Members in order to replicate data*/
@@ -1860,7 +1864,7 @@ void LowerTypeTestsModule::buildBitSetsPerCallsite(Function* TypeTestFunc,
           std::string toAdd = F->getName().str();
 
           /* remove ".cfi" from functions which already exist in jump tables */
-          uint64_t CFIIndex = toAdd.find_first_of(".cfi");
+          uint64_t CFIIndex = toAdd.find(".cfi");
           if (CFIIndex != std::string::npos) {
             toAdd = toAdd.substr(0, CFIIndex);
           }
