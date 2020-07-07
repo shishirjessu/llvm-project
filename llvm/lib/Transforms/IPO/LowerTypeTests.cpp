@@ -2000,6 +2000,12 @@ void LowerTypeTestsModule::replaceDirectCalls(Value *Old, Value *New) {
 }
 
 bool LowerTypeTestsModule::lower() {
+  std::error_code EC;
+  llvm::raw_fd_ostream OS("before_lowerc.bc", EC, llvm::sys::fs::F_None);
+  WriteBitcodeToFile(M, OS);
+  OS.flush();
+
+
   Function *TypeTestFunc =
       M.getFunction(Intrinsic::getName(Intrinsic::type_test));
 
@@ -2483,10 +2489,9 @@ bool LowerTypeTestsModule::lower() {
   }
 
 
-  std::error_code EC;
-  llvm::raw_fd_ostream OS("lower_result.bc", EC, llvm::sys::fs::F_None);
-  WriteBitcodeToFile(M, OS);
-  OS.flush();
+  llvm::raw_fd_ostream After_OS("lower_result.bc", EC, llvm::sys::fs::F_None);
+  WriteBitcodeToFile(M, After_OS);
+  After_OS.flush();
 
   return true;
 }
