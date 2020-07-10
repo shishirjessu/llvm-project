@@ -1806,7 +1806,12 @@ void LowerTypeTestsModule::buildBitSetsPerCallsite(Function* TypeTestFunc,
   for (const Use &U : TypeTestFunc->uses()) {
     auto CI = cast<CallInst>(U.getUser());
 
-    int lineNumber = CI -> getDebugLoc() -> getLine();
+    int lineNumber;
+    if (CI -> getDebugLoc() -> getInlinedAt()) 
+      lineNumber = CI -> getDebugLoc() -> getInlinedAt() -> getLine();
+    else
+      lineNumber = CI -> getDebugLoc() -> getLine();
+
     std::string functionName (CI -> getCaller() -> getName());
 
     CallsitesPerFunction[functionName].push_back(std::make_pair(lineNumber, CI));
