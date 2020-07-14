@@ -524,7 +524,7 @@ class LowerTypeTestsModule {
 
   std::map<Metadata*, std::set<int>> AllowedIndices;
 
-  bool UseFuzzingCFI = true;
+  bool UseFuzzingCFI = false;
   bool traceMode = false;
 
   std::map<std::string, JumpTableInfo> ExistingJumpTables;
@@ -947,6 +947,22 @@ void LowerTypeTestsModule::buildBitSetsFromGlobalVariables(
   }
 
   Constant *NewInit = ConstantStruct::getAnon(M.getContext(), GlobalInits);
+
+  /* iterate through vtables for this metadata type */
+  for (uint64_t i = 0; i < GlobalInits.size(); i++) {
+    Constant* CurTable = GlobalInits[i];
+
+    if (CurTable -> getNumOperands() == 0) 
+      continue;
+
+    ConstantAggregate* InnerTable = (ConstantAggregate*) (CurTable -> getOperand(0));
+
+    for (uint64_t j = 0; j < InnerTable -> getNumOperands(); j++) {
+      BitCastInst* BCI = (BitCastInst*) (InnerTable -> getOperand(j));
+      std::string TableEntryName = BCI->stripPointerCasts()->getName().str();
+    }
+  }
+
   auto *CombinedGlobal =
       new GlobalVariable(M, NewInit->getType(), /*isConstant=*/true,
                          GlobalValue::PrivateLinkage, NewInit);
