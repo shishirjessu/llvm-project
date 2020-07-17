@@ -525,7 +525,7 @@ class LowerTypeTestsModule {
   std::map<Metadata*, std::set<int>> AllowedIndices;
 
   bool UseFuzzingCFI = false;
-  bool traceMode = false;
+  bool traceMode = true;
 
   std::map<std::string, JumpTableInfo> ExistingJumpTables;
 
@@ -2022,7 +2022,7 @@ void LowerTypeTestsModule::replaceDirectCalls(Value *Old, Value *New) {
 
 bool LowerTypeTestsModule::lower() {
   std::error_code EC;
-  llvm::raw_fd_ostream OS("before_lowerc.bc", EC, llvm::sys::fs::F_None);
+  llvm::raw_fd_ostream OS("before_lower.bc", EC, llvm::sys::fs::F_None);
   WriteBitcodeToFile(M, OS);
   OS.flush();
 
