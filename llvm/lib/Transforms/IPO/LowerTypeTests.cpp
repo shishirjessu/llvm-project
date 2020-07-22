@@ -32,6 +32,7 @@
 #include "llvm/IR/Constant.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalAlias.h"
@@ -78,6 +79,7 @@
 #include <set>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -500,6 +502,8 @@ class LowerTypeTestsModule {
   /// replaceDirectCalls - Go through the uses list for this definition and
   /// replace each use, which is a direct function call.
   void replaceDirectCalls(Value *Old, Value *New);
+
+  void branchesExperiment();
 
 public:
   LowerTypeTestsModule(Module &M, ModuleSummaryIndex *ExportSummary,
@@ -1759,6 +1763,8 @@ void LowerTypeTestsModule::replaceDirectCalls(Value *Old, Value *New) {
 }
 
 bool LowerTypeTestsModule::lower() {
+  branchesExperiment();
+
   Function *TypeTestFunc =
       M.getFunction(Intrinsic::getName(Intrinsic::type_test));
 
@@ -2226,7 +2232,60 @@ bool LowerTypeTestsModule::lower() {
     }
   }
 
+  
+
   return true;
+}
+
+void LowerTypeTestsModule::branchesExperiment() {
+  std::unordered_map <std::string, std::vector<std::tuple<int, BranchInst*>>> BrInstPerFunction;
+
+  for (Function& F: M.functions()) {
+    std::vector<std::tuple<int, BranchInst*>> BrInstsInF;
+    for (BasicBlock& BB: F) {
+      for (Instruction& Instr: BB.instructionsWithoutDebug()) {
+        BranchInst* BI = dyn_cast<BranchInst>(&Instr);
+
+        /* We are only concerned with conditional branches with debug info */
+        if (BI && BI->isConditional() && BI -> getDebugLoc()) {
+          int loc;
+          if (BI -> getDebugLoc() -> getInlinedAt()) 
+            loc = BI -> getDebugLoc() -> getInlinedAt() -> getLine();
+          else
+            loc = BI -> getDebugLoc() -> getLine();
+
+          BrInstsInF.push_back(std::make_tuple(loc, BI));
+        }
+      }
+    }
+
+    if (BrInstsInF.size() > 0)
+      BrInstPerFunction[std::string(F.getName())] = BrInstsInF;
+  }
+
+  for (auto pair: BrInstPerFunction) {
+    std::string fName = pair.first;
+    std::vector<std::tuple<int, BranchInst*>> BrInstsInF = pair.second;
+    std::sort(BrInstsInF.begin(), BrInstsInF.end());
+
+    for (uint64_t i = 0; i < BrInstsInF.size(); i++) {
+      BranchInst* BrInst = std::get<1>(BrInstsInF[i]);
+      IRBuilder <> B (BrInst);
+
+      Value* BranchName = B.CreateGlobalStringPtr(
+        StringRef(fName + ":" + std::to_string(i)));
+
+      Value* Cond = BrInst -> getCondition();
+
+      FunctionCallee TraceCall= M.getOrInsertFunction("__trace", 
+        Type::getVoidTy(M.getContext()), Int1Ty, Int8PtrTy);
+
+      std::vector<Value*> TraceArgs {Cond, BranchName};
+
+      B.CreateCall(TraceCall, TraceArgs);
+      B.SetInsertPoint(BrInst);
+    }
+  }
 }
 
 PreservedAnalyses LowerTypeTestsPass::run(Module &M,
