@@ -2232,8 +2232,6 @@ bool LowerTypeTestsModule::lower() {
     }
   }
 
-  
-
   return true;
 }
 
@@ -2285,6 +2283,17 @@ void LowerTypeTestsModule::branchesExperiment() {
       B.CreateCall(TraceCall, TraceArgs);
       B.SetInsertPoint(BrInst);
     }
+  }
+
+  /* disable further optimizations to prevent trace() call removal */
+  for(Function &func: M.functions()) {
+    if (!func.isIntrinsic()) {
+      GlobalValue* UsedArr = {&func};
+      appendToUsed(M, UsedArr);
+    }
+
+    func.addFnAttr(Attribute::OptimizeNone);
+    func.addFnAttr(Attribute::NoInline);
   }
 }
 
