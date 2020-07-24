@@ -503,7 +503,15 @@ class LowerTypeTestsModule {
   /// replace each use, which is a direct function call.
   void replaceDirectCalls(Value *Old, Value *New);
 
+  typedef std::unordered_map<std::string, std::vector<std::tuple<int, BranchInst*>>> branchMap;
+
+  branchMap computeBrInstPerFunction();
+  void addTraceCalls(branchMap& BrInstPerFunction); 
   void branchesExperiment();
+  void disableFurtherOptimizations();
+
+  bool instrument = true;
+
 
 public:
   LowerTypeTestsModule(Module &M, ModuleSummaryIndex *ExportSummary,
@@ -2235,8 +2243,8 @@ bool LowerTypeTestsModule::lower() {
   return true;
 }
 
-void LowerTypeTestsModule::branchesExperiment() {
-  std::unordered_map <std::string, std::vector<std::tuple<int, BranchInst*>>> BrInstPerFunction;
+LowerTypeTestsModule::branchMap LowerTypeTestsModule::computeBrInstPerFunction() {
+  branchMap BrInstPerFunction;
 
   for (Function& F: M.functions()) {
     std::vector<std::tuple<int, BranchInst*>> BrInstsInF;
@@ -2261,8 +2269,17 @@ void LowerTypeTestsModule::branchesExperiment() {
       BrInstPerFunction[std::string(F.getName())] = BrInstsInF;
   }
 
+  return BrInstPerFunction;
+}
+
+void LowerTypeTestsModule::addTraceCalls(branchMap& BrInstPerFunction) {
   for (auto pair: BrInstPerFunction) {
     std::string fName = pair.first;
+
+    /* instrumenting __trace itself results in an infinite loop */
+    if (fName == "__trace")
+      continue;
+
     std::vector<std::tuple<int, BranchInst*>> BrInstsInF = pair.second;
     std::sort(BrInstsInF.begin(), BrInstsInF.end());
 
@@ -2284,7 +2301,9 @@ void LowerTypeTestsModule::branchesExperiment() {
       B.SetInsertPoint(BrInst);
     }
   }
+}
 
+void LowerTypeTestsModule::disableFurtherOptimizations() {
   /* disable further optimizations to prevent trace() call removal */
   for(Function &func: M.functions()) {
     if (!func.isIntrinsic()) {
@@ -2294,6 +2313,15 @@ void LowerTypeTestsModule::branchesExperiment() {
 
     func.addFnAttr(Attribute::OptimizeNone);
     func.addFnAttr(Attribute::NoInline);
+  }
+}
+
+void LowerTypeTestsModule::branchesExperiment() {
+  branchMap BrInstPerFunction = computeBrInstPerFunction();
+
+  if (instrument) {
+    addTraceCalls(BrInstPerFunction);
+    disableFurtherOptimizations();
   }
 }
 
