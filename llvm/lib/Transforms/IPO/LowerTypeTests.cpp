@@ -2315,6 +2315,25 @@ void LowerTypeTestsModule::addTraceCall(std::string BranchName, BranchInst* BrIn
 }
 
 
+void LowerTypeTestsModule::instrumentBranch(std::string BranchName, BranchInst* BrInst) { 
+  Function *TrapFn =
+      Intrinsic::getDeclaration(&M, Intrinsic::trap);
+
+  FunctionType* FTy = TrapFn->getFunctionType();
+
+  BasicBlock* trapBlock = 
+      BasicBlock::Create(M.getContext(), BranchName + "_trap", BrInst->getParent()->getParent());
+
+  IRBuilder<> B(trapBlock);
+  B.CreateCall(FTy, TrapFn);
+  B.CreateUnreachable();
+
+  /* for now assume successor 0 is always ifTrue */
+  BrInst->setSuccessor(1, trapBlock);
+
+  int x = 2; /* so I can see block in gdb, delete later */
+}
+
 void LowerTypeTestsModule::branchesExperiment() {
   branchMap BrInstPerFunction = computeBrInstPerFunction();
   handleBranches(BrInstPerFunction);
