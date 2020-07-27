@@ -506,11 +506,13 @@ class LowerTypeTestsModule {
   typedef std::unordered_map<std::string, std::vector<std::tuple<int, BranchInst*>>> branchMap;
 
   branchMap computeBrInstPerFunction();
-  void addTraceCalls(branchMap& BrInstPerFunction); 
+  void handleBranches(branchMap& BrInstPerFunction); 
+  void addTraceCall(std::string BranchName, BranchInst* BrInst);
+  void instrumentBranch(std::string BranchName, BranchInst* BrInst);
   void branchesExperiment();
   void disableFurtherOptimizations();
 
-  bool instrument = true;
+  bool BranchCFI = true;
 
 
 public:
@@ -2272,7 +2274,7 @@ LowerTypeTestsModule::branchMap LowerTypeTestsModule::computeBrInstPerFunction()
   return BrInstPerFunction;
 }
 
-void LowerTypeTestsModule::addTraceCalls(branchMap& BrInstPerFunction) {
+void LowerTypeTestsModule::handleBranches(branchMap& BrInstPerFunction) {
   for (auto pair: BrInstPerFunction) {
     std::string fName = pair.first;
 
@@ -2285,22 +2287,39 @@ void LowerTypeTestsModule::addTraceCalls(branchMap& BrInstPerFunction) {
 
     for (uint64_t i = 0; i < BrInstsInF.size(); i++) {
       BranchInst* BrInst = std::get<1>(BrInstsInF[i]);
-      IRBuilder <> B (BrInst);
+      std::string BranchName = fName + ":" + std::to_string(i);
 
-      Value* BranchName = B.CreateGlobalStringPtr(
-        StringRef(fName + ":" + std::to_string(i)));
-
-      Value* Cond = BrInst -> getCondition();
-
-      FunctionCallee TraceCall= M.getOrInsertFunction("__trace", 
-        Type::getVoidTy(M.getContext()), Int1Ty, Int8PtrTy);
-
-      std::vector<Value*> TraceArgs {Cond, BranchName};
-
-      B.CreateCall(TraceCall, TraceArgs);
-      B.SetInsertPoint(BrInst);
+      if (BranchCFI)
+        instrumentBranch(BranchName, BrInst);
+      else 
+        addTraceCall(BranchName, BrInst); 
     }
   }
+}
+
+
+void LowerTypeTestsModule::addTraceCall(std::string BranchName, BranchInst* BrInst) {
+  IRBuilder <> B (BrInst);
+
+  Value* BranchNameGlobal = B.CreateGlobalStringPtr(BranchName);
+
+  Value* Cond = BrInst -> getCondition();
+
+  FunctionCallee TraceCall= M.getOrInsertFunction("__trace", 
+    Type::getVoidTy(M.getContext()), Int1Ty, Int8PtrTy);
+
+  std::vector<Value*> TraceArgs {Cond, BranchNameGlobal};
+
+  B.CreateCall(TraceCall, TraceArgs);
+  B.SetInsertPoint(BrInst);
+}
+
+
+void LowerTypeTestsModule::branchesExperiment() {
+  branchMap BrInstPerFunction = computeBrInstPerFunction();
+  handleBranches(BrInstPerFunction);
+
+  disableFurtherOptimizations();
 }
 
 void LowerTypeTestsModule::disableFurtherOptimizations() {
@@ -2316,14 +2335,7 @@ void LowerTypeTestsModule::disableFurtherOptimizations() {
   }
 }
 
-void LowerTypeTestsModule::branchesExperiment() {
-  branchMap BrInstPerFunction = computeBrInstPerFunction();
 
-  if (instrument) {
-    addTraceCalls(BrInstPerFunction);
-    disableFurtherOptimizations();
-  }
-}
 
 PreservedAnalyses LowerTypeTestsPass::run(Module &M,
                                           ModuleAnalysisManager &AM) {
