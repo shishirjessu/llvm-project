@@ -82,6 +82,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <cxxabi.h>
+#include <iostream>
 
 using namespace llvm;
 using namespace lowertypetests;
@@ -512,7 +514,7 @@ class LowerTypeTestsModule {
   void branchesExperiment();
   void disableFurtherOptimizations();
 
-  bool BranchCFI = true;
+  bool BranchCFI = false;
 
 
 public:
@@ -2245,6 +2247,13 @@ bool LowerTypeTestsModule::lower() {
   return true;
 }
 
+inline std::string demangle(const char* name) {
+  int status = -1; 
+
+  std::unique_ptr<char, void(*)(void*)> res { abi::__cxa_demangle(name, NULL, NULL, &status), std::free };
+  return (status == 0) ? res.get() : std::string(name);
+}
+
 LowerTypeTestsModule::branchMap LowerTypeTestsModule::computeBrInstPerFunction() {
   branchMap BrInstPerFunction;
 
@@ -2267,8 +2276,18 @@ LowerTypeTestsModule::branchMap LowerTypeTestsModule::computeBrInstPerFunction()
       }
     }
 
-    if (BrInstsInF.size() > 0)
-      BrInstPerFunction[std::string(F.getName())] = BrInstsInF;
+    std::string fName = std::string(F.getName());
+    const char* fname_char = fName.c_str();
+    std::string demangled = demangle(fname_char);
+
+    /* very hacky attempt to prevent stdlib and 
+       other internal functions from being instrumented */
+    bool isStdLib = demangled.find("std::") != std::string::npos;
+    bool isInternalFunction = demangled.rfind("_", 0) == 0;
+
+    if (BrInstsInF.size() > 0 && !isStdLib && !isInternalFunction) {
+      BrInstPerFunction[fName] = BrInstsInF;
+    }
   }
 
   return BrInstPerFunction;
@@ -2277,10 +2296,6 @@ LowerTypeTestsModule::branchMap LowerTypeTestsModule::computeBrInstPerFunction()
 void LowerTypeTestsModule::handleBranches(branchMap& BrInstPerFunction) {
   for (auto pair: BrInstPerFunction) {
     std::string fName = pair.first;
-
-    /* instrumenting __trace itself results in an infinite loop */
-    if (fName == "__trace")
-      continue;
 
     std::vector<std::tuple<int, BranchInst*>> BrInstsInF = pair.second;
     std::sort(BrInstsInF.begin(), BrInstsInF.end());
