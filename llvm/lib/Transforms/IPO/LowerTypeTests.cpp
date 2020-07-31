@@ -64,6 +64,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/TrailingObjects.h"
@@ -513,8 +514,9 @@ class LowerTypeTestsModule {
   void instrumentBranch(std::string BranchName, BranchInst* BrInst);
   void branchesExperiment();
   void disableFurtherOptimizations();
+  std::map<std::string, std::vector<int>> readBranchCFG();
 
-  bool BranchCFI = false;
+  bool BranchCFI = true;
 
 
 public:
@@ -2320,7 +2322,7 @@ void LowerTypeTestsModule::addTraceCall(std::string BranchName, BranchInst* BrIn
 
   Value* Cond = BrInst -> getCondition();
 
-  FunctionCallee TraceCall= M.getOrInsertFunction("__trace", 
+  FunctionCallee TraceCall= M.getOrInsertFunction("__branch_trace", 
     Type::getVoidTy(M.getContext()), Int1Ty, Int8PtrTy);
 
   std::vector<Value*> TraceArgs {Cond, BranchNameGlobal};
@@ -2329,8 +2331,28 @@ void LowerTypeTestsModule::addTraceCall(std::string BranchName, BranchInst* BrIn
   B.SetInsertPoint(BrInst);
 }
 
+std::map<std::string, std::vector<int>> LowerTypeTestsModule::readBranchCFG() {
+  /* Parse the input file to obtain the CFG as a std::map */
+  ExitOnError ExitOnErr("BranchCFI: ");
+
+  auto CfgSummaryFile =
+      ExitOnErr(errorOrToExpected(MemoryBuffer::getFile("/home/sjessu/branch_cfg.txt")));
+
+  Expected<json::Value> E = json::parse(CfgSummaryFile->getBuffer());
+  assert(E && E->kind() == json::Value::Object); 
+
+  json::Value CFGData = E.get();
+
+  std::map<std::string, std::vector<int>> CFG;
+  json::fromJSON(CFGData, CFG);
+
+  return CFG;
+}
+
 
 void LowerTypeTestsModule::instrumentBranch(std::string BranchName, BranchInst* BrInst) { 
+  std::map<std::string, std::vector<int>> CFG = readBranchCFG();
+
   Function *TrapFn =
       Intrinsic::getDeclaration(&M, Intrinsic::trap);
 
@@ -2343,8 +2365,22 @@ void LowerTypeTestsModule::instrumentBranch(std::string BranchName, BranchInst* 
   B.CreateCall(FTy, TrapFn);
   B.CreateUnreachable();
 
-  /* for now assume successor 0 is always ifTrue */
-  BrInst->setSuccessor(1, trapBlock);
+  
+  if (CFG.find(BranchName) != CFG.end()) { // branch has been seen
+    std::vector<int> validConds = CFG[BranchName];
+
+    if (validConds.size() == 1) { // only one side has been taken
+
+      /* for now assume successor 0 is always ifTrue. 
+         Then, if the condition is always false (0), 
+         we set successor 0 (ifTrue) to be invalid. 
+         It's correct in a strange, backwards way */
+      BrInst->setSuccessor(validConds[0], trapBlock);
+    }
+  } else { // branch has not been seen, render invalid
+    BrInst->setSuccessor(0, trapBlock);
+    BrInst->setSuccessor(1, trapBlock);
+  }
 
   int x = 2; /* so I can see block in gdb, delete later */
 }
@@ -2353,7 +2389,8 @@ void LowerTypeTestsModule::branchesExperiment() {
   branchMap BrInstPerFunction = computeBrInstPerFunction();
   handleBranches(BrInstPerFunction);
 
-  disableFurtherOptimizations();
+  if (!BranchCFI)
+    disableFurtherOptimizations();
 }
 
 void LowerTypeTestsModule::disableFurtherOptimizations() {
