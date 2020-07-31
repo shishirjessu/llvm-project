@@ -27,6 +27,7 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/TypeMetadataUtils.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constant.h"
@@ -515,6 +516,7 @@ class LowerTypeTestsModule {
   void branchesExperiment();
   void disableFurtherOptimizations();
   std::map<std::string, std::vector<int>> readBranchCFG();
+  void fixPhiNodes(BranchInst* BrInst);
 
   bool BranchCFI = true;
 
@@ -1777,7 +1779,16 @@ void LowerTypeTestsModule::replaceDirectCalls(Value *Old, Value *New) {
 }
 
 bool LowerTypeTestsModule::lower() {
+  std::error_code EC;
+  llvm::raw_fd_ostream OS("before_lowerc.bc", EC, llvm::sys::fs::F_None);
+  WriteBitcodeToFile(M, OS);
+  OS.flush();
+
   branchesExperiment();
+
+  llvm::raw_fd_ostream After_OS("lower_result.bc", EC, llvm::sys::fs::F_None);
+  WriteBitcodeToFile(M, After_OS);
+  After_OS.flush();
 
   Function *TypeTestFunc =
       M.getFunction(Intrinsic::getName(Intrinsic::type_test));
@@ -2247,6 +2258,7 @@ bool LowerTypeTestsModule::lower() {
   }
 
   return true;
+
 }
 
 inline std::string demangle(const char* name) {
@@ -2311,7 +2323,24 @@ void LowerTypeTestsModule::handleBranches(branchMap& BrInstPerFunction) {
       else 
         addTraceCall(BranchName, BrInst); 
     }
+
+    fixPhiNodes(std::get<1>(BrInstsInF[0]));
   }
+}
+
+void LowerTypeTestsModule::fixPhiNodes(BranchInst* BrInst) {
+	Function* F = BrInst->getParent()->getParent();
+
+	for (BasicBlock& BB: *F) {
+      for (Instruction& Instr: BB.instructionsWithoutDebug()) {
+        PHINode* PN = dyn_cast<PHINode>(&Instr);
+
+        if (PN) {
+			/* todo: delete phi values for removed predecessors */        	
+        }
+      }
+    }
+
 }
 
 
@@ -2389,8 +2418,8 @@ void LowerTypeTestsModule::branchesExperiment() {
   branchMap BrInstPerFunction = computeBrInstPerFunction();
   handleBranches(BrInstPerFunction);
 
-  if (!BranchCFI)
-    disableFurtherOptimizations();
+  // if (!BranchCFI)
+  disableFurtherOptimizations();
 }
 
 void LowerTypeTestsModule::disableFurtherOptimizations() {
