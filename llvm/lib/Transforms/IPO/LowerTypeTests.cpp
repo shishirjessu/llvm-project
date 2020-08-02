@@ -42,6 +42,7 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
@@ -507,7 +508,7 @@ class LowerTypeTestsModule {
   /// replace each use, which is a direct function call.
   void replaceDirectCalls(Value *Old, Value *New);
 
-  typedef std::unordered_map<std::string, std::vector<std::tuple<int, BranchInst*>>> branchMap;
+  typedef std::unordered_map<std::string, std::vector<BranchInst*>> branchMap;
 
   branchMap computeBrInstPerFunction();
   void handleBranches(branchMap& BrInstPerFunction); 
@@ -516,7 +517,8 @@ class LowerTypeTestsModule {
   void branchesExperiment();
   void disableFurtherOptimizations();
   std::map<std::string, std::vector<int>> readBranchCFG();
-  void fixPhiNodes(BranchInst* BrInst);
+  void fixPhiNodes(Function* F);
+  bool shouldExcludeFromBranchCFI(Function& F);
 
   bool BranchCFI = true;
 
@@ -2261,6 +2263,7 @@ bool LowerTypeTestsModule::lower() {
 
 }
 
+
 inline std::string demangle(const char* name) {
   int status = -1; 
 
@@ -2268,54 +2271,56 @@ inline std::string demangle(const char* name) {
   return (status == 0) ? res.get() : std::string(name);
 }
 
+
+bool LowerTypeTestsModule::shouldExcludeFromBranchCFI(Function& F) {
+	std::string fName = std::string(F.getName());
+  const char* fname_char = fName.c_str();
+  std::string demangled = demangle(fname_char);
+
+  /* very hacky attempt to prevent stdlib and 
+     other internal functions from being instrumented */
+  bool isStdLib = demangled.find("std::") != std::string::npos;
+  bool isInternalFunction = demangled.rfind("_", 0) == 0;
+
+  return isStdLib || isInternalFunction;
+}
+
+
 LowerTypeTestsModule::branchMap LowerTypeTestsModule::computeBrInstPerFunction() {
   branchMap BrInstPerFunction;
 
   for (Function& F: M.functions()) {
-    std::vector<std::tuple<int, BranchInst*>> BrInstsInF;
-    for (BasicBlock& BB: F) {
-      for (Instruction& Instr: BB.instructionsWithoutDebug()) {
-        BranchInst* BI = dyn_cast<BranchInst>(&Instr);
+  	if (shouldExcludeFromBranchCFI(F))
+  		continue;
 
-        /* We are only concerned with conditional branches with debug info */
-        if (BI && BI->isConditional() && BI -> getDebugLoc()) {
-          int loc;
-          if (BI -> getDebugLoc() -> getInlinedAt()) 
-            loc = BI -> getDebugLoc() -> getInlinedAt() -> getLine();
-          else
-            loc = BI -> getDebugLoc() -> getLine();
+  	std::vector<BranchInst*> BrInstsInF;
 
-          BrInstsInF.push_back(std::make_tuple(loc, BI));
-        }
-      }
-    }
+  	for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
+  		BranchInst* BI = dyn_cast<BranchInst>(&(*I));
 
-    std::string fName = std::string(F.getName());
-    const char* fname_char = fName.c_str();
-    std::string demangled = demangle(fname_char);
+  		if (BI && BI->isConditional()) 
+  			BrInstsInF.push_back(BI);
+  	}
 
-    /* very hacky attempt to prevent stdlib and 
-       other internal functions from being instrumented */
-    bool isStdLib = demangled.find("std::") != std::string::npos;
-    bool isInternalFunction = demangled.rfind("_", 0) == 0;
-
-    if (BrInstsInF.size() > 0 && !isStdLib && !isInternalFunction) {
-      BrInstPerFunction[fName] = BrInstsInF;
-    }
+  	if (!BrInstsInF.empty()){
+  		std::string fName = std::string(F.getName());
+  		BrInstPerFunction[fName] = BrInstsInF;
+  	}
   }
 
   return BrInstPerFunction;
 }
 
-void LowerTypeTestsModule::handleBranches(branchMap& BrInstPerFunction) {
-  for (auto pair: BrInstPerFunction) {
-    std::string fName = pair.first;
 
-    std::vector<std::tuple<int, BranchInst*>> BrInstsInF = pair.second;
-    std::sort(BrInstsInF.begin(), BrInstsInF.end());
+
+void LowerTypeTestsModule::handleBranches(branchMap& BrInstPerFunction) {
+  for (auto nameVecPair: BrInstPerFunction) {
+    std::string fName = nameVecPair.first;
+
+    std::vector<BranchInst*> BrInstsInF = nameVecPair.second;
 
     for (uint64_t i = 0; i < BrInstsInF.size(); i++) {
-      BranchInst* BrInst = std::get<1>(BrInstsInF[i]);
+      BranchInst* BrInst = (BrInstsInF[i]);
       std::string BranchName = fName + ":" + std::to_string(i);
 
       if (BranchCFI){
@@ -2326,13 +2331,16 @@ void LowerTypeTestsModule::handleBranches(branchMap& BrInstPerFunction) {
         addTraceCall(BranchName, BrInst); 
     }
 
-    fixPhiNodes(std::get<1>(BrInstsInF[0]));
+    fixPhiNodes(BrInstsInF[0]->getParent()->getParent());
   }
 }
 
-void LowerTypeTestsModule::fixPhiNodes(BranchInst* BrInst) {
-	Function* F = BrInst->getParent()->getParent();
-
+/* PHINodes must have one entry for each predecessor
+ 	 in their parent basic block. Since we change basic
+ 	 blocks, we remove some of these predecessors, and 
+ 	 thus must fix the PHINodes to keep the LLVM 
+ 	 verifier happy */
+void LowerTypeTestsModule::fixPhiNodes(Function* F) {
 	std::vector<PHINode*> removedPhiNodes;
 
 	for (BasicBlock& BB: *F) {
