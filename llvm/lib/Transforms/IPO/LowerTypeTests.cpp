@@ -812,7 +812,7 @@ Value *LowerTypeTestsModule::lowerTypeTestCall(Metadata *TypeId, CallInst *CI,
   Value *PtrAsInt = B.CreatePtrToInt(Ptr, IntPtrTy);
 
   if (traceMode) {
-    FunctionCallee TraceCall= M.getOrInsertFunction("__trace", 
+    FunctionCallee TraceCall= M.getOrInsertFunction("__call_trace", 
       Type::getVoidTy(M.getContext()), IntPtrTy);
   
     B.CreateCall(TraceCall, B.CreatePointerCast(PtrAsInt, IntPtrTy));
