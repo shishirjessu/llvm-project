@@ -2318,8 +2318,10 @@ void LowerTypeTestsModule::handleBranches(branchMap& BrInstPerFunction) {
       BranchInst* BrInst = std::get<1>(BrInstsInF[i]);
       std::string BranchName = fName + ":" + std::to_string(i);
 
-      if (BranchCFI)
+      if (BranchCFI){
+      	addTraceCall(BranchName, BrInst); /* debug purposes */
         instrumentBranch(BranchName, BrInst);
+      }
       else 
         addTraceCall(BranchName, BrInst); 
     }
@@ -2331,16 +2333,42 @@ void LowerTypeTestsModule::handleBranches(branchMap& BrInstPerFunction) {
 void LowerTypeTestsModule::fixPhiNodes(BranchInst* BrInst) {
 	Function* F = BrInst->getParent()->getParent();
 
-	for (BasicBlock& BB: *F) {
-      for (Instruction& Instr: BB.instructionsWithoutDebug()) {
-        PHINode* PN = dyn_cast<PHINode>(&Instr);
+	std::vector<PHINode*> removedPhiNodes;
 
-        if (PN) {
-			/* todo: delete phi values for removed predecessors */        	
-        }
+	for (BasicBlock& BB: *F) {
+    for (Instruction& Instr: BB.instructionsWithoutDebug()) {
+      PHINode* PN = dyn_cast<PHINode>(&Instr);
+
+      if (PN) {
+      	std::set<BasicBlock*> preds;
+      	for (BasicBlock *Pred : predecessors(&BB))
+      		preds.insert(Pred);
+
+      	/* phi nodes are deleted from the middle of the 
+      		 list, so we must make sure we are examining
+      		 the correct index  */
+      	int numIncomingValues = PN->getNumIncomingValues();
+      	int currentPhiIndex = 0;
+
+      	for (int i = 0; i < numIncomingValues; i++) {
+      		BasicBlock* curPred = PN->getIncomingBlock(currentPhiIndex);
+      		if (preds.find(curPred) == preds.end()){
+      			/* don't remove instruction now, to preserve Instruction iterator */
+      			PN->removeIncomingValue(currentPhiIndex, /*DeletePHIIfEmpty=*/false);
+      			if (PN->getNumIncomingValues() == 0)
+      				removedPhiNodes.push_back(PN); 
+      		}
+      		else 
+      			currentPhiIndex++;
+      	}
       }
     }
+  }
 
+  for (PHINode* PN: removedPhiNodes) {
+		PN->replaceAllUsesWith(UndefValue::get(PN->getType()));
+  	PN->eraseFromParent();
+  }
 }
 
 
