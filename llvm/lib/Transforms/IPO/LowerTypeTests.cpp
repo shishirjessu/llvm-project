@@ -413,7 +413,14 @@ class LowerTypeTestsModule {
     std::vector<CallInst *> CallSites;
     bool IsExported = false;
   };
+
+  struct TIInfo {
+    unsigned UniqueId;
+    std::vector<GlobalTypeMember *> RefGlobals;
+  };
+
   DenseMap<Metadata *, TypeIdUserInfo> TypeIdUsers;
+  DenseMap<Metadata *, TIInfo> TypeIdInfo;
 
   /// This structure describes how to lower type tests for a particular type
   /// identifier. It is either built directly from the global analysis (during
@@ -505,6 +512,9 @@ class LowerTypeTestsModule {
   /// replace each use, which is a direct function call.
   void replaceDirectCalls(Value *Old, Value *New);
 
+
+
+
   /* my contributions. To do: put them in the right place */
 
   void printCallsites(Function* TypeTestFunc);
@@ -515,24 +525,41 @@ class LowerTypeTestsModule {
     Constant *JumpTable;
   };
 
-  struct TIInfo {
-    unsigned UniqueId;
-    std::vector<GlobalTypeMember *> RefGlobals;
+  struct CallsiteInfo {
+    std::string functionName;
+    CallInst* CI;
+    uint64_t index;
   };
+
 
   typedef std::vector<std::pair<int, CallInst*>> CallsiteList;
 
   std::map<Metadata*, std::set<int>> AllowedIndices;
+  std::map<Metadata*, std::set<int>> AllowedOffsets;
 
-  bool UseFuzzingCFI = false;
+  std::map<std::string, std::vector<int>> VCallCFG;  
+
+  bool UseFuzzingCFI = true;
   bool traceMode = true;
 
   std::map<std::string, JumpTableInfo> ExistingJumpTables;
 
+  std::map<CallInst*, std::string> callsiteNames;
+
   std::string getMDString(Metadata* md);
+
+  void buildVCallBitSets(ArrayRef<Metadata *> TypeIds, 
+                       ArrayRef<GlobalTypeMember *> GTMs);
+
   void buildBitSetsPerCallsite(Function* TypeTestFunc, 
                                DenseMap<Metadata *, TIInfo>& TypeIdInfo, 
                                BumpPtrAllocator& Alloc);
+
+  void processCallsite(CallsiteInfo& CSI);
+
+  std::map<std::string, std::vector<int>> readVCallCFG();
+
+
 
 
 public:
@@ -610,8 +637,8 @@ BitSetInfo LowerTypeTestsModule::buildBitSet(
       uint64_t offsetToAdd = GlobalAndOffset.second + Offset;
 
       if (UseFuzzingCFI) {
-        std::set<int> allowed = AllowedIndices[TypeId];
-        if (allowed.find(offsetToAdd / 8) != allowed.end()) 
+        std::set<int> allowed = AllowedOffsets[TypeId];
+        if (allowed.find(offsetToAdd) != allowed.end()) 
           BSB.addOffset(offsetToAdd);
       } 
       else {
@@ -811,11 +838,19 @@ Value *LowerTypeTestsModule::lowerTypeTestCall(Metadata *TypeId, CallInst *CI,
 
   Value *PtrAsInt = B.CreatePtrToInt(Ptr, IntPtrTy);
 
+  Constant *OffsetedGlobalAsInt =
+      ConstantExpr::getPtrToInt(TIL.OffsetedGlobal, IntPtrTy);
+
+  Value *PtrOffset = B.CreateSub(PtrAsInt, OffsetedGlobalAsInt);
+
   if (traceMode) {
-    FunctionCallee TraceCall= M.getOrInsertFunction("__call_trace", 
-      Type::getVoidTy(M.getContext()), IntPtrTy);
+    FunctionCallee TraceCall= M.getOrInsertFunction("__vcall_trace", 
+      Type::getVoidTy(M.getContext()), Int8PtrTy, IntPtrTy);
+
+    std::vector<Value*> Args = {B.CreateGlobalStringPtr(callsiteNames[CI]), 
+      B.CreatePointerCast(PtrOffset, IntPtrTy)};
   
-    B.CreateCall(TraceCall, B.CreatePointerCast(PtrAsInt, IntPtrTy));
+    B.CreateCall(TraceCall, Args);
   }
 
   /* In trace mode, mark unsatisfiable call-sites as 
@@ -833,12 +868,12 @@ Value *LowerTypeTestsModule::lowerTypeTestCall(Metadata *TypeId, CallInst *CI,
 
   BasicBlock *InitialBB = CI->getParent();
 
-  Constant *OffsetedGlobalAsInt =
-      ConstantExpr::getPtrToInt(TIL.OffsetedGlobal, IntPtrTy);
+  // Constant *OffsetedGlobalAsInt =
+  //     ConstantExpr::getPtrToInt(TIL.OffsetedGlobal, IntPtrTy);
   if (TIL.TheKind == TypeTestResolution::Single)
     return B.CreateICmpEQ(PtrAsInt, OffsetedGlobalAsInt);
 
-  Value *PtrOffset = B.CreateSub(PtrAsInt, OffsetedGlobalAsInt);
+  // Value *PtrOffset = B.CreateSub(PtrAsInt, OffsetedGlobalAsInt);
 
   // We need to check that the offset both falls within our range and is
   // suitably aligned. We can check both properties at the same time by
@@ -1791,135 +1826,106 @@ void LowerTypeTestsModule::buildBitSetsFromDisjointSet(
   }
 
   // Build the bitsets from this disjoint set.
+  if (UseFuzzingCFI || traceMode) {
+    if (IsGlobalSet)
+      buildVCallBitSets(TypeIds, OrderedGTMs);
+  }
+
+
   if (IsGlobalSet)
     buildBitSetsFromGlobalVariables(TypeIds, OrderedGTMs);
   else
     buildBitSetsFromFunctions(TypeIds, OrderedGTMs);
 }
 
-void LowerTypeTestsModule::buildBitSetsPerCallsite(Function* TypeTestFunc, 
-                                                   DenseMap<Metadata *, TIInfo>& TypeIdInfo,
-                                                   BumpPtrAllocator& Alloc) {
+
+std::map<std::string, std::vector<int>> LowerTypeTestsModule::readVCallCFG() {
   /* Parse the input file to obtain the CFG as a std::map */
-  ExitOnError ExitOnErr("-lowertypetests-cfg-summary: cfg.txt:");
+  ExitOnError ExitOnErr("BranchCFI: ");
 
   auto CfgSummaryFile =
-      ExitOnErr(errorOrToExpected(MemoryBuffer::getFile("/home/sjessu/cfg.txt")));
+      ExitOnErr(errorOrToExpected(MemoryBuffer::getFile("/home/sjessu/branch_cfg.txt")));
 
   Expected<json::Value> E = json::parse(CfgSummaryFile->getBuffer());
   assert(E && E->kind() == json::Value::Object); 
 
   json::Value CFGData = E.get();
 
-  std::map<std::string, std::vector<std::string>> CFG;
+  std::map<std::string, std::vector<int>> CFG;
   json::fromJSON(CFGData, CFG);
-  
 
-  /* construct map from function to list of all indirect
-     call-sites in this function*/
-  std::map<std::string, CallsiteList> CallsitesPerFunction;
+  return CFG;
+}
 
+
+void LowerTypeTestsModule::processCallsite(LowerTypeTestsModule::CallsiteInfo& CSI) {
+  auto TypeIdMDVal = dyn_cast<MetadataAsValue>(CSI.CI->getArgOperand(1));
+
+  /* construct new metadata for callsite */
+  MDString* typeId = (MDString*) TypeIdMDVal->getMetadata();
+  std::string typeName = (typeId->getString()).str();
+  std::string callsiteID = CSI.functionName + ":" + std::to_string(CSI.index);
+  std::string newTypeName = typeName + "//" + callsiteID;
+
+ /* replace metadata at ths callsite */
+  MDString* newMD = MDString::get(M.getContext(), newTypeName);
+  Value* v = MetadataAsValue::get(M.getContext(), newMD);
+  CSI.CI->setArgOperand(1, v);     
+
+  /* ensures llvm.type.test call is erased for new metadata */
+  TypeIdUsers.insert({newMD, {}}); /* fails if already added */
+  TypeIdUsers[newMD].CallSites.push_back(CSI.CI);
+
+  std::vector <GlobalTypeMember*> oldGTMs = TypeIdInfo[typeId].RefGlobals;
+  std::vector<Metadata*> MDVector {newMD};
+
+  std::set<int> offsetsForCallsite (VCallCFG[callsiteID].begin(), VCallCFG[callsiteID].end());
+  AllowedOffsets[newMD] = offsetsForCallsite;
+
+  buildBitSetsFromGlobalVariables(MDVector, oldGTMs);
+}
+
+
+void LowerTypeTestsModule::buildVCallBitSets(ArrayRef<Metadata *> TypeIds, 
+                       ArrayRef<GlobalTypeMember *> GTMs) {
+
+  if (UseFuzzingCFI)
+    VCallCFG = readVCallCFG();
+
+  std::map<std::string, std::vector<CallInst*>> CallsitesPerFunction;
+
+  Function *TypeTestFunc =
+      M.getFunction(Intrinsic::getName(Intrinsic::type_test));
+
+  /* invokes use_iterator, which is deterministic */
   for (const Use &U : TypeTestFunc->uses()) {
     auto CI = cast<CallInst>(U.getUser());
-
-    int lineNumber;
-    if (CI -> getDebugLoc() -> getInlinedAt()) 
-      lineNumber = CI -> getDebugLoc() -> getInlinedAt() -> getLine();
-    else
-      lineNumber = CI -> getDebugLoc() -> getLine();
-
     std::string functionName (CI -> getCaller() -> getName());
 
-    CallsitesPerFunction[functionName].push_back(std::make_pair(lineNumber, CI));
+    CallsitesPerFunction[functionName].push_back(CI);
   }
 
-  /* process callsites for each function */
   for (const auto& kv: CallsitesPerFunction) {
     std::string functionName(kv.first);
+    std::vector<CallInst*> curCallsites = CallsitesPerFunction[functionName];
 
-    std::vector<std::pair<int, CallInst*>>& curCallsites = CallsitesPerFunction[functionName];
-    std::sort(curCallsites.begin(), curCallsites.end());
+    for (uint64_t i = 0; i < curCallsites.size(); i++) {
+      CallInst* CI = curCallsites[i];
 
-    /* get functions at each callsite, rename metadata, and build bitsets */
-    for (uint64_t i = 0; i < curCallsites.size(); i++) { 
-      CallInst* CI = curCallsites[i].second;
-      auto TypeIdMDVal = dyn_cast<MetadataAsValue>(CI->getArgOperand(1));
+      if (UseFuzzingCFI) {
+        LowerTypeTestsModule::CallsiteInfo CSI;
+        CSI.functionName = functionName;
+        CSI.CI = CI;
+        CSI.index = i;
 
-      /* construct new metadata for callsite */
-      MDString* typeId = (MDString*) TypeIdMDVal->getMetadata();
-      std::string typeName = (typeId->getString()).str();
-      std::string callsiteID = functionName + ":" + std::to_string(i);
-      std::string newTypeName = typeName + "//" + callsiteID;
-
-      /* replace metadata at ths callsite */
-      MDString* newMD = MDString::get(M.getContext(), newTypeName);
-      Value* v = MetadataAsValue::get(M.getContext(), newMD);
-      CI->setArgOperand(1, v);       
-
-      /* ensures llvm.type.test call is erased for new metadata */
-      TypeIdUsers.insert({newMD, {}}); /* fails if already added */
-      TypeIdUsers[newMD].CallSites.push_back(CI);
-
-      std::set<int> allowedFunctionIndices;
-      std::vector<std::string> functionsToConsider = CFG[callsiteID];
-
-      /* If there are no functions whose types match up to this callsite, 
-         there are no candidates for fuzzing targets. We still need to lower
-         the type.test call, but we do it as a global variable so that no
-         functions are associated with it and the callsite is marked unsatisfiable */
-      std::vector <GlobalTypeMember*> oldGTMs = TypeIdInfo[typeId].RefGlobals;
-
-      if (oldGTMs.size() == 0 || functionsToConsider.size() == 0) {
-        std::vector<Metadata*> oldMDVector {newMD};
-        oldGTMs.clear();
-        buildBitSetsFromGlobalVariables(oldMDVector, oldGTMs);
-        continue;
+        processCallsite(CSI);
       }
-
-      /* must create new Global Type Members in order to replicate data*/
-      std::vector<GlobalTypeMember*> newGTMs;
-
-      /* for each old Global Type Member, construct a new one */
-      for (unsigned i = 0; i < oldGTMs.size(); i++) {
-          Function *F = cast<Function>(oldGTMs[i]->getGlobal());
-          std::string toAdd = F->getName().str();
-
-          /* remove ".cfi" from functions which already exist in jump tables */
-          uint64_t CFIIndex = toAdd.find(".cfi");
-          if (CFIIndex != std::string::npos) {
-            toAdd = toAdd.substr(0, CFIIndex);
-          }
-
-          /* for each jump table, record the indices with valid functions */
-          if (std::find(functionsToConsider.begin(), 
-                        functionsToConsider.end(), 
-                        toAdd) != functionsToConsider.end()) {
-            allowedFunctionIndices.insert(i);
-          }
-
-          /* construct the new Global Type Member */
-          AllowedIndices[newMD] = allowedFunctionIndices;
-
-          Metadata* zeroMD = ConstantAsMetadata::get(ConstantInt::get(Int64Ty, 0));
-          Metadata *mdArray[] =  {zeroMD, newMD}; 
-
-          auto *node = MDTuple::get(M.getContext(), mdArray);
-          std::vector<MDNode*> newTypes {node};
-
-          GlobalTypeMember* newGTM = GlobalTypeMember::create(Alloc, 
-                                          oldGTMs[i] -> getGlobal(), 
-                                          oldGTMs[i] -> isJumpTableCanonical(), 
-                                          oldGTMs[i] -> isExported(), 
-                                          newTypes);
-
-          newGTMs.push_back(newGTM);
-      }
-
-      std::vector<Metadata*> newMDVector {newMD};
-      buildBitSetsFromFunctionsNative(newMDVector, newGTMs);
+      
+      callsiteNames[CI] = functionName + ":" + std::to_string(i);
     }
   }
 }
+
 
 /// Lower all type tests in this module.
 LowerTypeTestsModule::LowerTypeTestsModule(
@@ -2126,7 +2132,6 @@ bool LowerTypeTestsModule::lower() {
   // identifiers.
   BumpPtrAllocator Alloc;
 
-  DenseMap<Metadata *, TIInfo> TypeIdInfo;
   unsigned CurUniqueId = 0;
   SmallVector<MDNode *, 2> Types;
 
@@ -2428,13 +2433,9 @@ bool LowerTypeTestsModule::lower() {
                });
 
     // Build bitsets for this disjoint set.
-    if (!UseFuzzingCFI)
-      buildBitSetsFromDisjointSet(TypeIds, Globals, ICallBranchFunnels);
+    buildBitSetsFromDisjointSet(TypeIds, Globals, ICallBranchFunnels);
   }
 
-  if (UseFuzzingCFI) { 
-    buildBitSetsPerCallsite(TypeTestFunc, TypeIdInfo, Alloc);
-  }
 
   allocateByteArrays();
 
