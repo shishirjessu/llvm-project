@@ -529,6 +529,8 @@ class LowerTypeTestsModule {
 
   std::map<std::string, JumpTableInfo> ExistingJumpTables;
 
+  std::map<CallInst*, std::string> callsiteNames;
+
   std::string getMDString(Metadata* md);
   void buildBitSetsPerCallsite(Function* TypeTestFunc, 
                                DenseMap<Metadata *, TIInfo>& TypeIdInfo, 
@@ -2281,6 +2283,9 @@ bool LowerTypeTestsModule::lower() {
   };
 
   if (TypeTestFunc) {
+    /* used for traceMode if enabled */
+    std::map<std::string, std::vector<CallInst*>> CallsitesPerFunction;
+
     for (const Use &U : TypeTestFunc->uses()) {
       auto CI = cast<CallInst>(U.getUser());
 
@@ -2289,6 +2294,21 @@ bool LowerTypeTestsModule::lower() {
         report_fatal_error("Second argument of llvm.type.test must be metadata");
       auto TypeId = TypeIdMDVal->getMetadata();
       AddTypeIdUse(TypeId).CallSites.push_back(CI);
+
+      if (traceMode) {
+        std::string functionName(CI->getCaller()->getName());
+        CallsitesPerFunction[functionName].push_back(CI);
+      }
+    }
+
+    if (traceMode) {
+      for (const auto& pair: CallsitesPerFunction) {
+        std::string functionName(pair.first);
+        for (uint64_t i = 0; i < CallsitesPerFunction[functionName].size(); i++) {
+          CallInst* CI = CallsitesPerFunction[functionName][i];
+          callsiteNames[CI] = functionName + ":" + std::to_string(i);
+        }
+      }
     }
   }
 
