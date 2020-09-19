@@ -536,6 +536,8 @@ class LowerTypeTestsModule {
                                DenseMap<Metadata *, TIInfo>& TypeIdInfo, 
                                BumpPtrAllocator& Alloc);
 
+  std::map<std::string, std::vector<CallInst*>> CallsitesPerFunction;
+
 
 public:
   LowerTypeTestsModule(Module &M, ModuleSummaryIndex *ExportSummary,
@@ -643,16 +645,6 @@ static Value *createMaskedBitTest(IRBuilder<> &B, Value *Bits,
 void LowerTypeTestsModule::printCallsites(Function* TypeTestFunc) {
   /* for each function with callsites, get callsites*/
   int total = 0;
-  std::map<std::string, CallsiteList> CallsitesPerFunction;
-
-  for (const Use &U : TypeTestFunc->uses()) {
-    auto CI = cast<CallInst>(U.getUser());
-
-    int lineNumber = CI -> getDebugLoc() -> getLine();
-    std::string functionName (CI -> getCaller() -> getName());
-
-    CallsitesPerFunction[functionName].push_back(std::make_pair(lineNumber, CI));
-  }
 
   for (auto kv: CallsitesPerFunction) {
     const std::string functionName(kv.first);
@@ -814,10 +806,14 @@ Value *LowerTypeTestsModule::lowerTypeTestCall(Metadata *TypeId, CallInst *CI,
   Value *PtrAsInt = B.CreatePtrToInt(Ptr, IntPtrTy);
 
   if (traceMode) {
+    /* args: callsite name, callee address */
     FunctionCallee TraceCall= M.getOrInsertFunction("__trace", 
-      Type::getVoidTy(M.getContext()), IntPtrTy);
+      Type::getVoidTy(M.getContext()), Int8PtrTy, IntPtrTy);
+
+    std::vector<Value*> Args = {B.CreateGlobalStringPtr(callsiteNames[CI]), 
+      B.CreatePointerCast(PtrAsInt, IntPtrTy)};
   
-    B.CreateCall(TraceCall, B.CreatePointerCast(PtrAsInt, IntPtrTy));
+    B.CreateCall(TraceCall, Args);
   }
 
   /* In trace mode, mark unsatisfiable call-sites as 
@@ -1799,36 +1795,16 @@ void LowerTypeTestsModule::buildBitSetsPerCallsite(Function* TypeTestFunc,
 
   std::map<std::string, std::vector<std::string>> CFG;
   json::fromJSON(CFGData, CFG);
-  
-
-  /* construct map from function to list of all indirect
-     call-sites in this function*/
-  std::map<std::string, CallsiteList> CallsitesPerFunction;
-
-  for (const Use &U : TypeTestFunc->uses()) {
-    auto CI = cast<CallInst>(U.getUser());
-
-    int lineNumber;
-    if (CI -> getDebugLoc() -> getInlinedAt()) 
-      lineNumber = CI -> getDebugLoc() -> getInlinedAt() -> getLine();
-    else
-      lineNumber = CI -> getDebugLoc() -> getLine();
-
-    std::string functionName (CI -> getCaller() -> getName());
-
-    CallsitesPerFunction[functionName].push_back(std::make_pair(lineNumber, CI));
-  }
 
   /* process callsites for each function */
   for (const auto& kv: CallsitesPerFunction) {
     std::string functionName(kv.first);
 
-    std::vector<std::pair<int, CallInst*>>& curCallsites = CallsitesPerFunction[functionName];
-    std::sort(curCallsites.begin(), curCallsites.end());
+    std::vector<CallInst*> curCallsites = CallsitesPerFunction[functionName];
 
     /* get functions at each callsite, rename metadata, and build bitsets */
     for (uint64_t i = 0; i < curCallsites.size(); i++) { 
-      CallInst* CI = curCallsites[i].second;
+      CallInst* CI = curCallsites[i];
       auto TypeIdMDVal = dyn_cast<MetadataAsValue>(CI->getArgOperand(1));
 
       /* construct new metadata for callsite */
@@ -2283,9 +2259,6 @@ bool LowerTypeTestsModule::lower() {
   };
 
   if (TypeTestFunc) {
-    /* used for traceMode if enabled */
-    std::map<std::string, std::vector<CallInst*>> CallsitesPerFunction;
-
     for (const Use &U : TypeTestFunc->uses()) {
       auto CI = cast<CallInst>(U.getUser());
 
@@ -2295,13 +2268,13 @@ bool LowerTypeTestsModule::lower() {
       auto TypeId = TypeIdMDVal->getMetadata();
       AddTypeIdUse(TypeId).CallSites.push_back(CI);
 
-      if (traceMode) {
+      if (traceMode || UseFuzzingCFI) {
         std::string functionName(CI->getCaller()->getName());
         CallsitesPerFunction[functionName].push_back(CI);
       }
     }
 
-    if (traceMode) {
+    if (traceMode || UseFuzzingCFI) {
       for (const auto& pair: CallsitesPerFunction) {
         std::string functionName(pair.first);
         for (uint64_t i = 0; i < CallsitesPerFunction[functionName].size(); i++) {
